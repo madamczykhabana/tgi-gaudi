@@ -98,14 +98,26 @@ def shift(tensor, dim, offset):
     elements = shape[dim]
     if offset == 0 or abs(offset) > elements:
         return tensor
+    #device = tensor.device
+    #tensor = tensor.cpu()
     htorch.core.mark_step()
-    indices = torch.arange(0, elements, dtype=torch.int32, device=tensor.device)
-    offset = torch.tensor(offset, dtype=torch.int32, device=tensor.device)
-    indices = torch.clamp(indices - offset, 0, elements - 1)
+    # We generate indices from (0 - offset + elements) to (elements - offset + elements)
+    # so that next modulo operation operates on positive values
+    #indices = torch.arange(0, elements, dtype=torch.int32, device=tensor.device)
+    #increase = torch.tensor(-offset + elements, dtype=torch.int32, device=tensor.device)
+    indices = torch.arange(0, elements, dtype=torch.int64, device=tensor.device)
+    increase = torch.tensor(-offset + elements, dtype=torch.int64, device=tensor.device)
+    indices.add_(increase)
+    indices.remainder_(elements)
     target_shape = [1,] * len(tensor.shape)
     target_shape[dim] = elements
     indices = indices.view(target_shape).expand(shape)
     result = torch.gather(tensor, dim, indices)
+    pre = tensor.sum().cpu()
+    post = result.sum().cpu()
+    if pre != post:
+        dbg_trace('SHIMPL', f'shape:{shape} dtype:{tensor.dtype} dim:{dim} offset:{offset} pre:{pre} post:{post} eq:{pre == post}')
+    #result = result.to(device)
     htorch.core.mark_step()
     return result
 
@@ -198,7 +210,7 @@ class CausalLMBatch(Batch):
             scenario = 'CONCAT'
         elif batches[0].batch_size != new_bs:
             scenario = 'RESHAPE'
-        elif padding[0] <= 1:
+        elif padding[0] <= 0:
             scenario = 'SHIFT'
             offsets = [b.max_input_length - max_input_length for b in batches]
             max_input_length = max(b.max_input_length for b in batches)
@@ -411,7 +423,7 @@ class CausalLMBatch(Batch):
         dbg_trace('FILTER', f'num_reqs:{len(self.requests)} -> {len(request_ids)}')
         request_ids = set(request_ids)
         self.requests = [req for req in self.requests if req.data.id in request_ids]
-        return self.__class__.recombine([self], pad_token_id)
+        return self
 
     @classmethod
     @tracer.start_as_current_span("concatenate")
@@ -635,7 +647,8 @@ class CausalLM(Model):
             batch = batch.__class__.recombine([batch], self.tokenizer.pad_token_id)
 
         scenario = 'PREFILL' if prefill else 'GENERATE'
-        dbg_trace(scenario, f'bs:{batch.batch_size} num_reqs:{len(batch.requests)} seq_len:{batch.seq_length}')
+        dbg_trace(scenario, f'bs:{batch.batch_size} num_reqs:{len(batch.requests)} seq_len:{batch.seq_length} padding:{batch.right_padding}')
+        assert batch.right_padding > 0, 'No more room for next token!'
         self.step = self.step + 1
         if self.hb_profer_started == True and self.step > self.profiling_warmup_steps + self.profiling_steps:
             self.hb_profer.stop()
