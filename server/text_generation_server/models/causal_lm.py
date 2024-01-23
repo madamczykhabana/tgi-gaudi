@@ -358,7 +358,7 @@ class CausalLMBatch(Batch):
         tokenized_inputs = tokenizer(
             [r.data.inputs for r in requests] + dummy_inputs,
             return_tensors="pt",
-            padding="max_length",
+            padding="longest",
             return_token_type_ids=False,
             truncation=True,
             max_length=max_input_length,
@@ -367,7 +367,7 @@ class CausalLMBatch(Batch):
         input_len = tokenized_inputs["input_ids"].shape[1]
         extra_padding = 0
         if is_optimized_for_gaudi and max_total_tokens > 0:
-            extra_padding = max(extra_padding, max_total_tokens - max_input_length - max_new_tokens)
+            extra_padding = max(extra_padding, max_total_tokens - input_len - max_new_tokens)
 
         for r in requests:
             r.input_length = input_len
@@ -407,7 +407,7 @@ class CausalLMBatch(Batch):
             next_token_chooser=next_token_chooser,
             top_n_tokens=top_n_tokens,
             top_n_tokens_tensor=top_n_tokens_tensor,
-            input_length=max_input_length,
+            input_length=input_len,
             right_padding=max_new_tokens + extra_padding if is_optimized_for_gaudi else 0
         )
 
