@@ -162,24 +162,22 @@ def grouped_move(dst_tensor_groups, dst_dims, dst_indices, src_tensor_groups, sr
     return dst_tensor_groups
 
 
-def extend_batch(tensor, target_bs, dim):
+def extend_batch(tensors, target_bs, dim):
+    diff = target_bs - tensors[0].size(dim)
     #TODO: add support for shrinking bs
-    if target_bs <= tensor.size(dim):
-        return tensor
-    shape = list(tensor.shape)
-    shape[dim] = target_bs
-    result = torch.empty(shape, device=tensor.device, dtype=tensor.dtype)
-    for batch_idx in range(tensor.size(dim)):
-        if dim == 0:
-            result[batch_idx] = tensor[batch_idx]
-        else:
-            result[:, batch_idx] = tensor[:, batch_idx]
+    if diff <= 0:
+        return tensors
+    shape = list(tensors[0].shape)
+    shape[dim] = diff
+    dbg_trace('EXTEND', f'{tensors[0].shape} {target_bs} {dim}')
+    padding = torch.empty(shape, device=tensors[0].device, dtype=tensors[0].dtype)
+    result = [torch.cat([tensor, padding], dim=dim) for tensor in tensors]
+    htorch.core.mark_step()
     return result
 
 
 def grouped_extend_batch(tensor_groups, target_bs, bs_dims):
-    tensor_groups = [[extend_batch(tensor, target_bs, dim) for tensor in tensors] for tensors, dim in zip(tensor_groups, bs_dims)]
-    htorch.core.mark_step()
+    tensor_groups = [extend_batch(tensors, target_bs, dim) for tensors, dim in zip(tensor_groups, bs_dims)]
     return tensor_groups
 
 
@@ -1045,6 +1043,7 @@ class CausalLM(Model):
         return generations, batch if not stopped else None
 
     def warmup(self, batches: List[CausalLMBatch]) -> None:
+        dbg_trace('WARMUP', 'start')
         self.shifting_warmup()
 
         if len(batches) < 2:
@@ -1061,6 +1060,7 @@ class CausalLM(Model):
         # decodes
         while decode_batch is not None:
             _, decode_batch = self.generate_token([decode_batch])
+        dbg_trace('WARMUP', 'done')
 
     def shifting_warmup(self) -> None:
         # TODO: add warmup for all possible shift variants
