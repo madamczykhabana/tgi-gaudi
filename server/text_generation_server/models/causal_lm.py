@@ -169,7 +169,6 @@ def extend_batch(tensors, target_bs, dim):
         return tensors
     shape = list(tensors[0].shape)
     shape[dim] = diff
-    dbg_trace('EXTEND', f'{tensors[0].shape} {target_bs} {dim}')
     padding = torch.empty(shape, device=tensors[0].device, dtype=tensors[0].dtype)
     result = [torch.cat([tensor, padding], dim=dim) for tensor in tensors]
     htorch.core.mark_step()
@@ -1043,7 +1042,6 @@ class CausalLM(Model):
         return generations, batch if not stopped else None
 
     def warmup(self, batches: List[CausalLMBatch]) -> None:
-        dbg_trace('WARMUP', 'start')
         self.shifting_warmup()
 
         if len(batches) < 2:
@@ -1060,7 +1058,6 @@ class CausalLM(Model):
         # decodes
         while decode_batch is not None:
             _, decode_batch = self.generate_token([decode_batch])
-        dbg_trace('WARMUP', 'done')
 
     def shifting_warmup(self) -> None:
         # TODO: add warmup for all possible shift variants
