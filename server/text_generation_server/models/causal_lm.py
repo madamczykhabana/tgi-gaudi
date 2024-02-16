@@ -298,6 +298,7 @@ class CausalLMBatch(Batch):
             past_values = [torch.stack(past_values)]
             self.attach_kv_cache(past_keys, past_values)
             self.merged_kv_cache = True
+            htorch.core.mark_step()
 
     def split_kv_cache_if_needed(self):
         if self.merged_kv_cache:
@@ -306,6 +307,7 @@ class CausalLMBatch(Batch):
             past_values = [t.clone() for t in past_values[0]]
             self.attach_kv_cache(past_keys, past_values)
             self.merged_kv_cache = False
+            htorch.core.mark_step()
 
     def get_tensor_groups(self):
         past_keys, past_values = self.detach_kv_cache()
