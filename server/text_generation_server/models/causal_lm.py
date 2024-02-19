@@ -162,6 +162,12 @@ def grouped_move(dst_tensor_groups, dst_dims, dst_indices, src_tensor_groups, sr
     return dst_tensor_groups
 
 
+def extend_tensor(tensor, padding, dim):
+    result = torch.cat([tensor, padding], dim=dim)
+    htorch.core.mark_step()
+    return result
+
+
 def extend_batch(tensors, target_bs, dim):
     diff = target_bs - tensors[0].size(dim)
     #TODO: add support for shrinking bs
@@ -170,9 +176,8 @@ def extend_batch(tensors, target_bs, dim):
     shape = list(tensors[0].shape)
     shape[dim] = diff
     padding = torch.empty(shape, device=tensors[0].device, dtype=tensors[0].dtype)
-    result = [torch.cat([tensor, padding], dim=dim) for tensor in tensors]
-    htorch.core.mark_step()
-    return result
+    tensors = [extend_tensor(t, padding, dim) for t in tensors]
+    return tensors
 
 
 def grouped_extend_batch(tensor_groups, target_bs, bs_dims):
@@ -412,8 +417,8 @@ class CausalLMBatch(Batch):
             target_bs = new_bs if i == dst_batch_idx else batches[i].batch_size
             batches[i].merge_kv_cache_if_needed(target_bs, offsets[i])
             batches[i].realign(target_bs, offsets[i], pad_token_id)
-        batches[dst_batch_idx].expand_bs(new_bs)
         batches[dst_batch_idx].split_kv_cache_if_needed()
+        batches[dst_batch_idx].expand_bs(new_bs)
         batches[dst_batch_idx].move_data([batches[i] for i in range(len(batches)) if i != dst_batch_idx])
 
         top_n_tokens = [r.data.top_n_tokens for r in flat_requests]
