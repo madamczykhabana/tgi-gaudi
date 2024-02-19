@@ -96,7 +96,6 @@ def biggest_single_chunk(offset):
         return -CHUNK_SIZES[idx-1]
     elif offset > 0:
         idx = bisect.bisect(CHUNK_SIZES, offset)
-        candidate = CHUNK_SIZES[idx]
         return CHUNK_SIZES[idx-1]
     else:
         return 0
@@ -106,6 +105,7 @@ def grouped_pad(tensor_groups, dims, values):
     paddings = [MAX_TOTAL_TOKENS - tensors[0].size(dim) if dim is not None else 0 for tensors, dim in zip(tensor_groups, dims)]
     grouped_result = []
     for tensors, dim, padding, value in zip(tensor_groups, dims, paddings, values):
+        assert dim in [-1, -2], 'Only dims -1 and -2 are supported!'
         if padding > 0:
             pad_shape = (0, 0, 0, padding) if dim == -2 else (0, padding)
             result = [torch.nn.functional.pad(t, pad_shape, value=value) for t in tensors]
@@ -357,7 +357,6 @@ class CausalLMBatch(Batch):
         dst_tensors, _, dst_dims = self.get_tensor_groups()
         free_indices_gen = self.free_indices_generator()
         for src_b in src_batches:
-            #src_indices = src_b.used_indices()
             src_indices = to_tensor_indices(src_b.used_indices(), self.input_ids.device)
             dst_indices = to_tensor_indices(src_b.update_indices(free_indices_gen), self.input_ids.device)
             src_tensors, _, src_dims = src_b.get_tensor_groups()
