@@ -212,12 +212,6 @@ def hpu_graph_fn(fn):
     return wrap_in_hpu_graph(FnModule(), disable_tensor_cache=False)
 
 
-def enable_hpu_graphs():
-    global grouped_move
-    # TODO: investigate why this causes crashes
-    # grouped_move = hpu_graph_fn(grouped_move)
-
-
 @dataclass
 class CausalLMRequest:
     idx: int
@@ -359,11 +353,16 @@ class CausalLMBatch(Batch):
             src_indices = to_tensor_indices(src_b.used_indices(), self.input_ids.device)
             dst_indices = to_tensor_indices(src_b.update_indices(free_indices_gen), self.input_ids.device)
             src_tensors, _, src_dims = src_b.get_tensor_groups()
-            # move past_key
+
+            # Instead of doing one huge grouped_move we're splitting it into 3 to improve perf and mem usage
+            # Both dst_tensors and src_tensors are lists of lists which follow this pattern:
+            # [[position_ids], [attention_mask], [position_ids], past_keys, past_values]
+
+            # move only past_keys
             dst_tensors[3:4] = grouped_move(dst_tensors[3:4], dst_dims[3:4], dst_indices, src_tensors[3:4], src_dims[3:4], src_indices)
-            # move past_value
+            # move only past_values
             dst_tensors[4:5] = grouped_move(dst_tensors[4:5], dst_dims[4:5], dst_indices, src_tensors[4:5], src_dims[4:5], src_indices)
-            # move rest
+            # move only input_ids, attention_mask and position_ids
             dst_tensors[:3] = grouped_move(dst_tensors[:3], dst_dims[:3], dst_indices, src_tensors[:3], src_dims[:3], src_indices)
         self.set_tensor_groups(dst_tensors)
         
@@ -669,9 +668,6 @@ class CausalLM(Model):
             if self.enable_hpu_graph:
                 model = wrap_in_hpu_graph(model, disable_tensor_cache=True)
         model = self.setup_quantization(model)
-
-        if self.enable_hpu_graph:
-            enable_hpu_graphs()
 
         if model.config.model_type in MODELS_OPTIMIZED_WITH_STATIC_SHAPES:
             self.is_optimized_for_gaudi = True
