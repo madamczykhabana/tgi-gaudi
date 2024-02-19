@@ -105,8 +105,8 @@ def grouped_pad(tensor_groups, dims, values):
     paddings = [MAX_TOTAL_TOKENS - tensors[0].size(dim) if dim is not None else 0 for tensors, dim in zip(tensor_groups, dims)]
     grouped_result = []
     for tensors, dim, padding, value in zip(tensor_groups, dims, paddings, values):
-        assert dim in [-1, -2], 'Only dims -1 and -2 are supported!'
         if padding > 0:
+            assert dim in [-1, -2], f'Only dims -1 and -2 are supported! {dim}'
             pad_shape = (0, 0, 0, padding) if dim == -2 else (0, padding)
             result = [torch.nn.functional.pad(t, pad_shape, value=value) for t in tensors]
         else:
