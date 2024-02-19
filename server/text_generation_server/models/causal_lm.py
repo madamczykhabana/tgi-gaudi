@@ -4,6 +4,7 @@ import itertools
 import time
 import glob
 import bisect
+import math
 
 import torch
 
@@ -91,20 +92,17 @@ def calculate_chunks(offset):
 
 
 def biggest_single_chunk(offset):
-    if offset < 0:
-        idx = bisect.bisect(CHUNK_SIZES, -offset)
-        return -CHUNK_SIZES[idx-1]
-    elif offset > 0:
-        idx = bisect.bisect(CHUNK_SIZES, offset)
-        return CHUNK_SIZES[idx-1]
+    if offset != 0:
+        idx = bisect.bisect(CHUNK_SIZES, abs(offset))
+        return int(math.copysign(CHUNK_SIZES[idx-1], offset))
     else:
         return 0
 
 
 def grouped_pad(tensor_groups, dims, values):
-    paddings = [MAX_TOTAL_TOKENS - tensors[0].size(dim) if dim is not None else 0 for tensors, dim in zip(tensor_groups, dims)]
     grouped_result = []
-    for tensors, dim, padding, value in zip(tensor_groups, dims, paddings, values):
+    for tensors, dim, value in zip(tensor_groups, dims, values):
+        padding = MAX_TOTAL_TOKENS - tensors[0].size(dim) if dim is not None else 0
         if padding > 0:
             assert dim in [-1, -2], f'Only dims -1 and -2 are supported! {dim}'
             pad_shape = (0, 0, 0, padding) if dim == -2 else (0, padding)
@@ -137,6 +135,7 @@ def grouped_shift(tensor_groups, dims, offset, merge_graphs):
     for c in chunks:
         tensor_groups = grouped_roll(tensor_groups, c, dims, merge_graphs)
     return tensor_groups
+
 
 def move(dst_tensors, dst_dim, dst_indices, src_tensors, src_dim, src_indices):
     if dst_dim == 1 and src_dim == 0:
