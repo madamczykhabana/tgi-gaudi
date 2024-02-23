@@ -113,18 +113,24 @@ def grouped_shift(tensor_groups, dims, offset, merge_graphs):
     return tensor_groups
 
 
-def move(dst_tensors, dst_indices, src_tensors):
+def flatten(seq):
+    return type(seq)(itertools.chain(*seq))
+
+
+def move(dst_tensors, dst_indices, src_tensors, max_tensors_in_graph):
     bs_dim = 0
-    if src_tensors[0].size(bs_dim) != dst_indices.size(bs_dim):
-        src_tensors = [torch.narrow(src_t, bs_dim, 0, dst_indices.size(bs_dim)) for src_t in src_tensors]
-    for dst_t, src_t in zip(dst_tensors, src_tensors):
+    num_indices = dst_indices.size(0)
+    for i, (dst_t, src_t) in enumerate(zip(dst_tensors, src_tensors)):
+        if i % max_tensors_in_graph == 0:
+            htorch.core.mark_step()
+        if src_t.size(bs_dim) != num_indices:
+            src_t = torch.narrow(src_t, bs_dim, 0, num_indices)
         dst_t.index_copy_(bs_dim, dst_indices, src_t)
-
-
-def grouped_move(dst_tensor_groups, dst_indices, src_tensor_groups):
-    for dst_tensors, src_tensors, in zip(dst_tensor_groups, src_tensor_groups):
-        move(dst_tensors, dst_indices, src_tensors)
     htorch.core.mark_step()
+
+
+def grouped_move(dst_tensor_groups, dst_indices, src_tensor_groups, max_tensors_in_graph):
+    move(flatten(dst_tensor_groups), dst_indices, flatten(src_tensor_groups), max_tensors_in_graph)
 
 
 def extend_tensor(tensor, padding, dim):
@@ -311,17 +317,8 @@ class CausalLMBatch(Batch):
         for src_b in src_batches:
             dst_indices = to_tensor_indices(src_b.update_indices(free_indices_gen), self.input_ids.device)
             src_tensors, _, src_dims = src_b.get_tensor_groups()
-
-            # Instead of doing one huge grouped_move we're splitting it into 3 to improve perf and mem usage
-            # Both dst_tensors and src_tensors are lists of lists which follow this pattern:
-            # [[position_ids], [attention_mask], [position_ids], past_keys, past_values]
-
-            # move only past_keys
-            grouped_move(dst_tensors[3:4], dst_indices, src_tensors[3:4])
-            # move only past_values
-            grouped_move(dst_tensors[4:5], dst_indices, src_tensors[4:5])
-            # move only input_ids, attention_mask and position_ids
-            grouped_move(dst_tensors[:3], dst_indices, src_tensors[:3])
+            max_tensors_in_graph = 20
+            grouped_move(dst_tensors, dst_indices, src_tensors, max_tensors_in_graph)
         self.set_tensor_groups(dst_tensors)
 
     @classmethod
