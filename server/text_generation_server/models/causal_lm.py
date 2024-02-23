@@ -54,7 +54,6 @@ def round_up(number, k):
 
 
 def to_tensor_indices(indices, device):
-    #return [torch.tensor(idx, dtype=torch.int32, device=device) for idx in indices]
     return torch.tensor(indices, dtype=torch.int32, device=device)
 
 
@@ -114,22 +113,17 @@ def grouped_shift(tensor_groups, dims, offset, merge_graphs):
     return tensor_groups
 
 
-def move(dst_tensors, dst_indices, src_tensors, merged_sources):
-    dst_dim = 0
-    src_dim = 0 if not merged_sources else 1
-    if src_tensors[0].size(src_dim) != dst_indices.size(dst_dim):
-        #idx = torch.arange(0, dst_indices.size(dst_dim))
-        #src_tensors = [torch.index_select(src_t, src_dim, idx) for src_t in src_tensors]
-        src_tensors = [torch.narrow(src_t, src_dim, 0, dst_indices.size(dst_dim)) for src_t in src_tensors]
-    if src_dim == 1:
-        src_tensors = src_tensors[0]
+def move(dst_tensors, dst_indices, src_tensors):
+    bs_dim = 0
+    if src_tensors[0].size(bs_dim) != dst_indices.size(bs_dim):
+        src_tensors = [torch.narrow(src_t, bs_dim, 0, dst_indices.size(bs_dim)) for src_t in src_tensors]
     for dst_t, src_t in zip(dst_tensors, src_tensors):
-        dst_t.index_copy_(dst_dim, dst_indices, src_t)
+        dst_t.index_copy_(bs_dim, dst_indices, src_t)
 
 
-def grouped_move(dst_tensor_groups, dst_indices, src_tensor_groups, merged_sources):
+def grouped_move(dst_tensor_groups, dst_indices, src_tensor_groups):
     for dst_tensors, src_tensors, in zip(dst_tensor_groups, src_tensor_groups):
-        move(dst_tensors, dst_indices, src_tensors, merged_sources)
+        move(dst_tensors, dst_indices, src_tensors)
     htorch.core.mark_step()
 
 
@@ -323,11 +317,11 @@ class CausalLMBatch(Batch):
             # [[position_ids], [attention_mask], [position_ids], past_keys, past_values]
 
             # move only past_keys
-            grouped_move(dst_tensors[3:4], dst_indices, src_tensors[3:4], src_b.merged_kv_cache)
+            grouped_move(dst_tensors[3:4], dst_indices, src_tensors[3:4])
             # move only past_values
-            grouped_move(dst_tensors[4:5], dst_indices, src_tensors[4:5], src_b.merged_kv_cache)
+            grouped_move(dst_tensors[4:5], dst_indices, src_tensors[4:5])
             # move only input_ids, attention_mask and position_ids
-            grouped_move(dst_tensors[:3], dst_indices, src_tensors[:3], False)
+            grouped_move(dst_tensors[:3], dst_indices, src_tensors[:3])
         self.set_tensor_groups(dst_tensors)
 
     @classmethod
@@ -378,7 +372,6 @@ class CausalLMBatch(Batch):
             batches[i].merge_kv_cache_if_needed(target_bs, offsets[i])
             batches[i].realign(target_bs, offsets[i], pad_token_id)
             batches[i].split_kv_cache_if_needed()
-        #batches[dst_batch_idx].split_kv_cache_if_needed()
         batches[dst_batch_idx].expand_bs(new_bs)
         batches[dst_batch_idx].move_data([batches[i] for i in range(len(batches)) if i != dst_batch_idx])
 
