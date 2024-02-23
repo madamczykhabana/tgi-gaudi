@@ -54,7 +54,8 @@ def round_up(number, k):
 
 
 def to_tensor_indices(indices, device):
-    return [torch.tensor(idx, dtype=torch.int32, device=device) for idx in indices]
+    #return [torch.tensor(idx, dtype=torch.int32, device=device) for idx in indices]
+    return torch.tensor(indices, dtype=torch.int32, device=device)
 
 
 def calculate_chunks(offset):
@@ -113,28 +114,23 @@ def grouped_shift(tensor_groups, dims, offset, merge_graphs):
     return tensor_groups
 
 
-def move(dst_tensors, dst_dim, dst_indices, src_tensors, src_dim, src_indices):
-    if dst_dim == 1 and src_dim == 0:
-        # Case 1: Only destination is merged
-        dst_tensors = dst_tensors[0]
-        dst_dim = 0
-    elif dst_dim == 0 and src_dim == 1:
-        # Case 2: Only source is merged
+def move(dst_tensors, dst_indices, src_tensors, merged_sources):
+    dst_dim = 0
+    src_dim = 0 if not merged_sources else 1
+    if src_tensors[0].size(src_dim) != dst_indices.size(dst_dim):
+        #idx = torch.arange(0, dst_indices.size(dst_dim))
+        #src_tensors = [torch.index_select(src_t, src_dim, idx) for src_t in src_tensors]
+        src_tensors = [torch.narrow(src_t, src_dim, 0, dst_indices.size(dst_dim)) for src_t in src_tensors]
+    if src_dim == 1:
         src_tensors = src_tensors[0]
-        src_dim = 0
-    else:
-        # Other cases don't need special support
-        pass
     for dst_t, src_t in zip(dst_tensors, src_tensors):
-        for dst_idx, src_idx in zip(dst_indices, src_indices):
-            dst_t.index_copy_(dst_dim, dst_idx, torch.index_select(src_t, src_dim, src_idx))
+        dst_t.index_copy_(dst_dim, dst_indices, src_t)
 
 
-def grouped_move(dst_tensor_groups, dst_dims, dst_indices, src_tensor_groups, src_dims, src_indices):
-    for dst_tensors, dst_dim, src_tensors, src_dim in zip(dst_tensor_groups, dst_dims, src_tensor_groups, src_dims):
-        move(dst_tensors, dst_dim, dst_indices, src_tensors, src_dim, src_indices)
+def grouped_move(dst_tensor_groups, dst_indices, src_tensor_groups, merged_sources):
+    for dst_tensors, src_tensors, in zip(dst_tensor_groups, src_tensor_groups):
+        move(dst_tensors, dst_indices, src_tensors, merged_sources)
     htorch.core.mark_step()
-    return dst_tensor_groups
 
 
 def extend_tensor(tensor, padding, dim):
@@ -179,13 +175,6 @@ def remove_kv_cache_from_output(module):
 
     module.forward = forward
     return module
-
-
-def hpu_graph_fn(fn):
-    class FnModule(torch.nn.Module):
-        def forward(self, *args, **kwargs):
-            return fn(*args, **kwargs)
-    return wrap_in_hpu_graph(FnModule(), disable_tensor_cache=False)
 
 
 @dataclass
@@ -326,7 +315,6 @@ class CausalLMBatch(Batch):
         dst_tensors, _, dst_dims = self.get_tensor_groups()
         free_indices_gen = self.free_indices_generator()
         for src_b in src_batches:
-            src_indices = to_tensor_indices(src_b.used_indices(), self.input_ids.device)
             dst_indices = to_tensor_indices(src_b.update_indices(free_indices_gen), self.input_ids.device)
             src_tensors, _, src_dims = src_b.get_tensor_groups()
 
@@ -335,14 +323,11 @@ class CausalLMBatch(Batch):
             # [[position_ids], [attention_mask], [position_ids], past_keys, past_values]
 
             # move only past_keys
-            dst_tensors[3:4] = grouped_move(dst_tensors[3:4], dst_dims[3:4], dst_indices,
-                                            src_tensors[3:4], src_dims[3:4], src_indices)
+            grouped_move(dst_tensors[3:4], dst_indices, src_tensors[3:4], src_b.merged_kv_cache)
             # move only past_values
-            dst_tensors[4:5] = grouped_move(dst_tensors[4:5], dst_dims[4:5], dst_indices,
-                                            src_tensors[4:5], src_dims[4:5], src_indices)
+            grouped_move(dst_tensors[4:5], dst_indices, src_tensors[4:5], src_b.merged_kv_cache)
             # move only input_ids, attention_mask and position_ids
-            dst_tensors[:3] = grouped_move(dst_tensors[:3], dst_dims[:3], dst_indices,
-                                           src_tensors[:3], src_dims[:3], src_indices)
+            grouped_move(dst_tensors[:3], dst_indices, src_tensors[:3], False)
         self.set_tensor_groups(dst_tensors)
 
     @classmethod
@@ -392,7 +377,8 @@ class CausalLMBatch(Batch):
             target_bs = new_bs if i == dst_batch_idx else batches[i].batch_size
             batches[i].merge_kv_cache_if_needed(target_bs, offsets[i])
             batches[i].realign(target_bs, offsets[i], pad_token_id)
-        batches[dst_batch_idx].split_kv_cache_if_needed()
+            batches[i].split_kv_cache_if_needed()
+        #batches[dst_batch_idx].split_kv_cache_if_needed()
         batches[dst_batch_idx].expand_bs(new_bs)
         batches[dst_batch_idx].move_data([batches[i] for i in range(len(batches)) if i != dst_batch_idx])
 
