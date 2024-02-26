@@ -116,11 +116,6 @@ def grouped_shift(tensor_groups, dims, offset, merge_graphs):
 def move(dst_tensors, dst_indices, src_tensors):
     bs_dim = 0
     num_indices = dst_indices.size(0)
-    if len(src_tensors) < len(dst_tensors):
-        assert len(src_tensors) == 1, "To many merged tensors!"
-        assert src_tensors[0].size(0) == len(dst_tensors), "Batched dim shape mismatch!"
-        # Source tensors are merged. We'll iterate over the first (stacked) dim
-        src_tensors = src_tensors[0]
     for i, (dst_t, src_t) in enumerate(zip(dst_tensors, src_tensors)):
         if src_t.size(bs_dim) != num_indices:
             src_t = torch.narrow(src_t, bs_dim, 0, num_indices)
@@ -154,6 +149,20 @@ def extend_batch(tensors, target_bs, dim):
 def grouped_extend_batch(tensor_groups, target_bs, bs_dims):
     tensor_groups = [extend_batch(tensors, target_bs, dim) for tensors, dim in zip(tensor_groups, bs_dims)]
     return tensor_groups
+
+
+def merge(tensor_group):
+    tensor_group = [torch.stack(tensor_group)]
+    htorch.core.mark_step()
+    return tensor_group
+
+
+def split(tensor_group, clone_data):
+    tensor_group = [t.squeeze(0) for t in torch.split(tensor_group[0], 1)]
+    if clone_data:
+        tensor_group = [t.clone() for t in tensor_group]
+    htorch.core.mark_step()
+    return tensor_group
 
 
 def remove_kv_cache_from_output(module):
@@ -254,20 +263,16 @@ class CausalLMBatch(Batch):
         small_bs = len(self.past_key_values) > self.batch_size
         if not self.merged_kv_cache and small_bs and (pad_needed or shift_needed or expand_needed):
             past_keys, past_values = self.detach_kv_cache()
-            past_keys = [torch.stack(past_keys)]
-            htorch.core.mark_step()
-            past_values = [torch.stack(past_values)]
-            htorch.core.mark_step()
+            past_keys = merge(past_keys)
+            past_values = merge(past_values)
             self.attach_kv_cache(past_keys, past_values)
             self.merged_kv_cache = True
 
-    def split_kv_cache_if_needed(self):
+    def split_kv_cache_if_needed(self, clone_data):
         if self.merged_kv_cache:
             past_keys, past_values = self.detach_kv_cache()
-            past_keys = [t.clone() for t in past_keys[0]]
-            htorch.core.mark_step()
-            past_values = [t.clone() for t in past_values[0]]
-            htorch.core.mark_step()
+            past_keys = split(past_keys, clone_data)
+            past_values = split(past_values, clone_data)
             self.attach_kv_cache(past_keys, past_values)
             self.merged_kv_cache = False
 
@@ -369,7 +374,7 @@ class CausalLMBatch(Batch):
             target_bs = new_bs if i == dst_batch_idx else batches[i].batch_size
             batches[i].merge_kv_cache_if_needed(target_bs, offsets[i])
             batches[i].realign(target_bs, offsets[i], pad_token_id)
-        batches[dst_batch_idx].split_kv_cache_if_needed()
+            batches[i].split_kv_cache_if_needed(i == dst_batch_idx)
         batches[dst_batch_idx].expand_bs(new_bs)
         batches[dst_batch_idx].move_data([batches[i] for i in range(len(batches)) if i != dst_batch_idx])
 
@@ -1028,4 +1033,4 @@ class CausalLM(Model):
         for chunk in chunk_sizes:
             batch.merge_kv_cache_if_needed(batch.batch_size, chunk)
             batch.realign(batch.batch_size, chunk, 0)
-            batch.split_kv_cache_if_needed()
+            batch.split_kv_cache_if_needed(True)
